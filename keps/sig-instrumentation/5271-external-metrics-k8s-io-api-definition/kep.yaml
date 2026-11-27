@@ -1,4 +1,4 @@
-title: external.metrics.k8s.io to GA
+title: external.metrics.k8s.io API definition
 kep-number: 5271
 authors:
   - "@rexagod"
@@ -6,7 +6,8 @@ authors:
 owning-sig: sig-instrumentation
 participating-sigs:
   - sig-instrumentation
-status: implementable
+  - sig-autoscaling
+status: provisional
 creation-date: "2025-05-05"
 reviewers:
   - "@dgrisonnet"
@@ -36,4 +37,9 @@ milestone:
 # List the feature gate name and the components for which it must be enabled
 feature-gates:  # Not gated since the (beta) external.metrics.k8s.io has been in
                 # production for a good while now.
-disable-supported: false
+disable-supported: true
+
+# The following PRR answers are required at beta release
+metrics:
+  - horizontal_pod_autoscaler_controller_metric_computation_total
+  - aggregator_unavailable_apiservice
