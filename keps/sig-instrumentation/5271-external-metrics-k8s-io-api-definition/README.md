@@ -233,11 +233,14 @@ nitty-gritty.
 Introduce `external.metrics.k8s.io/v1` with the same fields and selector
 semantics as `v1beta1`, and keep `v1beta1` for existing clients.
 
-The external metrics client in `k8s.io/metrics` will pick the version from
-discovery, as the custom metrics client already does, and the HPA controller
-will use it. The HPA controller is the only in-tree consumer of that client.
-The current `v1beta1` Go interface of the client stays, so existing callers
-keep compiling.
+The external metrics client in `k8s.io/metrics` gets a new constructor that
+picks the version from discovery, as the custom metrics client already does,
+and kube-controller-manager uses it for the HPA controller. The HPA controller
+is the only in-tree consumer of that client. The existing constructors keep
+their behavior: `NewForConfig` and `NewForConfigOrDie` use `v1beta1`, and
+`New` uses the REST client it is given. The `v1beta1` Go interface stays, and
+a value read through `v1` is returned as the `v1beta1` types, so existing
+callers keep compiling.
 
 Adapters can add `v1` on their own schedule. HPA must keep working with an
 adapter that serves only `v1beta1`. Adapters built on
@@ -280,6 +283,7 @@ the adapter already serves.
 | HPA client | Registered and served versions | Expected request |
 | --- | --- | --- |
 | Existing beta client | `v1beta1`, with or without `v1` | `v1beta1` |
+| Existing beta client | `v1` only | `v1beta1`, and the read fails |
 | Version-aware client | `v1beta1` only | `v1beta1` |
 | Version-aware client | `v1` only | `v1` |
 | Version-aware client | Both versions, stable preferred | `v1` |
@@ -462,12 +466,20 @@ each request.
   [`test/integration/examples/apiserver_test.go`](https://github.com/kubernetes/kubernetes/blob/master/test/integration/examples/apiserver_test.go)
   does for the sample API server. Keep one client while the test moves from
   `v1beta1` only to both versions, changes the priorities, removes `v1` and
-  adds it back. At each step, check that the client follows the change: the
-  request path, the returned group, version and kind, and the values. Also
-  cover a `v1` APIService whose backend serves only `v1beta1`: once with a
-  backend that serves only unaggregated discovery, so `v1` is stale and the
-  client uses `v1beta1`, and once with a backend whose aggregated discovery
-  document leaves out `v1`, so the client selects `v1` and the read fails.
+  adds it back, and clear its version cache after each change, as
+  `PeriodicallyInvalidate` does. At each step, check that the client follows
+  the change: the request path, the returned group, version and kind, and the
+  values. Also cover a `v1` APIService whose backend serves only `v1beta1`,
+  while `v1beta1` works and both APIServices have the same priority. Wait
+  until aggregated discovery shows the expected freshness for `v1`, then clear
+  the version cache of the same client and read. With a backend that serves
+  only unaggregated discovery, `v1` is stale and the client uses `v1beta1`.
+  With a backend whose aggregated discovery document leaves out `v1`, `v1` is
+  current with no resources, the client sends the read to `v1`, and the read
+  fails. Check this failure on the client side. The backend returns 404 for
+  `/apis/external.metrics.k8s.io/v1`, so the `v1` APIService is not
+  `Available`, and the aggregator answers the read with 503 without sending it
+  to the backend.
 
 ##### e2e tests
 
@@ -476,7 +488,15 @@ each request.
   `ci-kubernetes-e2e-autoscaling-hpa-cpu`
   ([sig-autoscaling-hpa-periodics](https://testgrid.k8s.io/sig-autoscaling-hpa-periodics)).
   The helpers in `test/e2e/framework/autoscaling` register only the `v1beta1`
-  APIService and will also register `v1`. Version changes are tested in
+  APIService. They will also register `v1` with the same priority, and delete
+  both APIServices after the test. The test
+  checks only the replica count today, so it also passes if HPA keeps
+  reading `v1beta1`, for example when kube-controller-manager still builds
+  the client with `external_metrics.NewForConfig`. The test will also check
+  that the agnhost log has requests to
+  `/apis/external.metrics.k8s.io/v1/namespaces/<test-namespace>/queue_messages_ready`
+  while the deployment scales. Nothing else reads this metric during the
+  test, so these requests come from the HPA. Version changes are tested in
   integration, so the e2e test does not disrupt a shared cluster.
 
 ### Graduation Criteria
@@ -549,7 +569,8 @@ in back-to-back releases.
   the `v1beta1` types.
 - The HPA controller selects the version through discovery. The tests in the
   Test Plan and the manual upgrade, downgrade and upgrade test pass.
-- The agnhost test adapter serves both versions, and the HPA e2e test uses it.
+- The agnhost test adapter serves both versions, and the HPA e2e test checks
+  that HPA reads through `v1`.
 - The external metrics e2e test, which runs daily in
   `ci-kubernetes-e2e-autoscaling-hpa-cpu`, has no non-infra related flakes in
   the last month before the promotion.
@@ -578,17 +599,19 @@ that serves only `v1beta1`, HPA keeps reading through `v1beta1`.
 
 To start using `v1`, update the adapter so that it serves `v1`, then create
 the `v1` APIService. Check that the APIService is `Available` and that a
-metric read through `v1` returns data. Keep the `v1beta1` APIService while
-clients that only know `v1beta1` use it, or while the control plane may be
-rolled back.
+metric read through `v1` returns data. If the adapter runs more than one
+replica, create the `v1` APIService only after every replica that receives
+traffic serves `v1`. Each availability check sends five discovery requests,
+and one success makes the APIService `Available`, so it can be `Available`
+while an old replica still serves only `v1beta1`. Keep the `v1beta1`
+APIService while clients that only know `v1beta1` use it, or while the
+control plane may be rolled back.
 
-Before rolling the control plane back, check that a metric read through
-`v1beta1` still works. To stop serving `v1` while the controller is
-version-aware, delete the `v1` APIService first, and then remove `v1` from the
-adapter. After the deletion, check that HPA reads external metrics
-successfully, for example that
-`horizontal_pod_autoscaler_controller_metric_computation_total{metric_type="External",error="none"}`
-increases.
+Before rolling the control plane back, make sure that `v1beta1` works, as
+described in [Feature Enablement and Rollback](#feature-enablement-and-rollback).
+To stop serving `v1` while the controller is version-aware, delete the `v1`
+APIService first, and then remove `v1` from the adapter. After the deletion,
+check that HPA reads the metrics again, as described in the same section.
 
 ### Version Skew Strategy
 
@@ -707,12 +730,23 @@ feature.
 NOTE: Also set `disable-supported` to `true` or `false` in `kep.yaml`.
 -->
 
-Yes. Delete the `v1` APIService, and a version-aware controller moves back
-to `v1beta1` after its version cache is cleared, which happens every HPA sync
-period. Until then, its external metric reads through `v1` fail. Other
-clients that read only `v1` stop working until the `v1` APIService is created
-again. Before rolling the control plane back to a version that only knows
-`v1beta1`, check that the `v1beta1` APIService works.
+Yes, if `v1beta1` works. Before you delete the `v1` APIService, read a metric
+through `v1beta1` with the HPA's namespace and selector, and check that it
+returns data. If the adapter serves only `v1`, first make it serve `v1beta1`
+and create the `v1beta1` APIService. Without them, HPA has no version to move
+to, and waiting does not help.
+
+After the `v1` APIService is deleted, a version-aware controller that reads
+through `v1` moves to `v1beta1` when its version cache is cleared, which
+happens every HPA sync period. Until then, its reads through `v1` fail. A
+controller that already reads through `v1beta1`, because `v1beta1` has the
+higher priority, is not affected. Wait at least two HPA sync periods, one for
+the cache to be cleared and one for the next read. Then check that each
+external metric of the HPA has a value in `status.currentMetrics`.
+`kubectl describe hpa` shows `<unknown>` for a metric whose last read failed.
+Other clients that read only `v1` stop working until the `v1` APIService is
+created again. The same `v1beta1` check applies before rolling the control
+plane back to a version that only knows `v1beta1`.
 
 ###### What happens if we reenable the feature if it was previously rolled back?
 
@@ -756,10 +790,11 @@ will rollout across nodes.
 -->
 
 A registered but unavailable version or a versioned data route missing from
-the adapter can prevent HPA from reading the metric. Existing pods keep
-running, but the HPA may be unable to scale on that metric. Inspect
-APIService availability, perform a metric read with the same selector and
-check the HPA conditions and current metrics.
+the adapter can prevent HPA from reading the metric. If the control plane is
+rolled back while the adapter serves only `v1`, HPA cannot read external
+metrics at all. Existing pods keep running, but the HPA may be unable to scale
+on that metric. Inspect APIService availability, perform a metric read with
+the same selector and check the HPA conditions and current metrics.
 
 ###### What specific metrics should inform a rollback?
 
@@ -906,8 +941,9 @@ Pick one more of these and delete the rest.
       (counter): availability of the APIService as seen by the aggregation
       layer.
     - `apiserver_request_terminations_total{component="aggregator",group="external.metrics.k8s.io"}`:
-      requests that the aggregation layer rejected because it could not reach
-      the adapter.
+      requests that the aggregation proxy ended before sending them to the
+      adapter, for example while the APIService is unavailable. Errors on the
+      connection to the adapter also return 503, but are not counted here.
     - `horizontal_pod_autoscaler_controller_metric_computation_total{metric_type="External"}`:
       external metric computations of the HPA controller, by error.
   - Components exposing the metrics: kube-apiserver and kube-controller-manager.
@@ -978,12 +1014,13 @@ Focusing mostly on:
     heartbeats, leader election, etc.)
 -->
 
-Yes. To select the version, the HPA controller reads the API group list from
-discovery, as it already does for custom metrics. While a version is selected,
-this is at most once per HPA sync period (15 seconds by default). If discovery
-fails or lists no supported version, nothing is cached, and each external
-metric read asks discovery again, so the controller makes about one discovery
-call per external metric in each sync period.
+Yes. To select the version, the HPA controller reads the API group list with
+`ServerGroups()`, as it already does for custom metrics. Each query sends
+`GET /api` and `GET /apis`. While a version is selected, there is at most one
+query per HPA sync period (15 seconds by default). If discovery fails or lists
+no supported version, nothing is cached, and each external metric read runs a
+new query, so the controller sends about two discovery requests per external
+metric in each sync period.
 
 ###### Will enabling / using this feature result in introducing new API types?
 
@@ -1073,8 +1110,11 @@ details). For now, we leave it here.
 
 ###### How does this feature react if the API server and/or etcd is unavailable?
 
-Initially, when establishing trust, APIServer being down impacts the ability to
-register the addon APIServer (adapter), and thus disrupts the HPA controller.
+HPA reads external metrics through kube-apiserver, which proxies the requests
+to the adapter, and it changes replica counts through the `scale` subresource
+of the target. While kube-apiserver is unavailable, existing pods keep
+running, but HPAs get no new metric values and do not change replica counts.
+While etcd is unavailable, HPAs cannot change replica counts.
 
 ###### What are other known failure modes?
 
@@ -1103,9 +1143,13 @@ For each of them, fill in the following information by copying the below templat
   adapter.
 - The `v1` APIService exists, but the adapter does not serve `v1`, because
   the APIService was created too early or `v1` was removed from the adapter
-  first. The `v1` APIService has `Available=False` with reason
-  `FailedDiscoveryCheck`. Aggregated discovery can still list `v1` as current
-  with no resources (see [Risks and Mitigations](#risks-and-mitigations)).
+  first. If the adapter answers `/apis/external.metrics.k8s.io/v1` with an
+  error, the `v1` APIService has `Available=False` with reason
+  `FailedDiscoveryCheck`. If the adapter answers that path but its `v1`
+  metric route is broken, the APIService stays `Available`, and only metric
+  reads through `v1` show the problem. Aggregated discovery can still list
+  `v1` as current with no resources (see
+  [Risks and Mitigations](#risks-and-mitigations)).
   If `v1` comes first, the controller keeps selecting it, its external metric
   reads fail, and HPAs report the condition above. Delete the `v1` APIService
   or update the adapter to serve `v1`. The integration test in the Test Plan
