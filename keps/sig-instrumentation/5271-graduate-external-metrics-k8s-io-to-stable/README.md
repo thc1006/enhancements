@@ -58,7 +58,7 @@ If none of those approvers are still appropriate, then changes to that list
 should be approved by the remaining approvers and/or the owning SIG (or
 SIG Architecture for cross-cutting KEPs).
 -->
-# KEP-5270: Graduate external.metrics.k8s.io to Stable
+# KEP-5271: Graduate external.metrics.k8s.io to Stable
 
 <!--
 This is the title of your KEP. Keep it short, simple, and descriptive. A good
@@ -83,10 +83,6 @@ tags, and then generate with `hack/update-toc.sh`.
   - [Goals](#goals)
   - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
-  - [User Stories (Optional)](#user-stories-optional)
-    - [Story 1](#story-1)
-    - [Story 2](#story-2)
-  - [Notes/Constraints/Caveats (Optional)](#notesconstraintscaveats-optional)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
   - [Test Plan](#test-plan)
@@ -95,6 +91,7 @@ tags, and then generate with `hack/update-toc.sh`.
       - [Integration tests](#integration-tests)
       - [e2e tests](#e2e-tests)
   - [Graduation Criteria](#graduation-criteria)
+    - [GA](#ga)
   - [Upgrade / Downgrade Strategy](#upgrade--downgrade-strategy)
   - [Version Skew Strategy](#version-skew-strategy)
 - [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
@@ -107,7 +104,6 @@ tags, and then generate with `hack/update-toc.sh`.
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
-- [Infrastructure Needed (Optional)](#infrastructure-needed-optional)
 <!-- /toc -->
 
 ## Release Signoff Checklist
@@ -131,14 +127,15 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 - [ ] (R) Enhancement issue in release milestone, which links to KEP dir in [kubernetes/enhancements] (not the initial KEP PR)
 - [ ] (R) KEP approvers have approved the KEP status as `implementable`
 - [X] (R) Design details are appropriately documented
-- [ ] (R) Test plan is in place, giving consideration to SIG Architecture and SIG Testing input (including test refactors)
-  - [ ] e2e Tests for all Beta API Operations (endpoints)
-  - [ ] (R) Ensure GA e2e tests meet requirements for [Conformance Tests](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/conformance-tests.md) 
+- [X] (R) Test plan is in place, giving consideration to SIG Architecture and SIG Testing input (including test refactors)
+  - [X] e2e Tests for all Beta API Operations (endpoints)
+  - [ ] (R) Ensure GA e2e tests meet requirements for [Conformance Tests](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/conformance-tests.md)
   - [ ] (R) Minimum Two Week Window for GA e2e tests to prove flake free
 - [X] (R) Graduation criteria is in place
+  - [ ] (R) [all GA Endpoints](https://github.com/kubernetes/community/pull/1806) must be hit by [Conformance Tests](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/conformance-tests.md) within one minor version of promotion to GA
 - [ ] (R) Production readiness review completed
 - [ ] (R) Production readiness review approved
-- [ ] "Implementation History" section is up-to-date for milestone
+- [X] "Implementation History" section is up-to-date for milestone
 - [ ] User-facing documentation has been created in [kubernetes/website], for publication to [kubernetes.io]
 - [ ] Supporting documentation—e.g., additional design documents, links to mailing list discussions/SIG meetings, relevant PRs/issues, release notes
 
@@ -200,6 +197,9 @@ know that this has succeeded?
 
 - Graduate `external.metrics.k8s.io` to stable, by introducing the same API under
   `v1` as exists currently under `v1beta1`.
+- Make the HPA controller select the API version through discovery, so that it
+  keeps working with adapters that serve only `v1beta1` and uses `v1` when
+  discovery prefers it.
 - The graduation (and thus the migration to the newer version) should be
   non-breaking.
 
@@ -212,7 +212,12 @@ and make progress.
 
 - Introduce `v1` version of the API that differs from `v1beta1` in any way,
   except naming.
-- Drop support for the existing `v1beta1` version.
+- Drop support for the existing `v1beta1` version as part of this graduation.
+  `v1beta1` stays in `k8s.io/metrics`. It is deprecated once `v1` is GA and
+  removed in a later release, following the
+  [deprecation policy](https://kubernetes.io/docs/reference/using-api/deprecation-policy/).
+- Add `v1` to Prometheus Adapter. Its deprecation is discussed in
+  [kubernetes-sigs/prometheus-adapter#701](https://github.com/kubernetes-sigs/prometheus-adapter/issues/701).
 
 ## Proposal
 
@@ -225,20 +230,25 @@ The "Design Details" section below is for the real
 nitty-gritty.
 -->
 
-The proposal broadly entails two efforts:
-- Introducing `external.metrics.k8s.io/v1` for the `k8s.io/metrics` package, and,
-- Migrating in-house components and sub-projects to utilize the stable version.
+Introduce `external.metrics.k8s.io/v1` with the same fields and selector
+semantics as `v1beta1`, and keep `v1beta1` for existing clients.
 
-The former will more-or-less be a cosmetic change, essentially bumping `v1beta1`
-to `v1`, as such, the latter will be exactly the same as the former as far as
-the API surface is concerned, with the only difference being the version names
-themselves.
+The external metrics client in `k8s.io/metrics` will pick the version from
+discovery, as the custom metrics client already does, and the HPA controller
+will use it. The HPA controller is the only in-tree consumer of that client.
+The current `v1beta1` Go interface of the client stays, so existing callers
+keep compiling.
 
-The latter will focus on utilizing the stable version in the
-`external.metrics.k8s.io`'s client, as well as `pkg/controller/podautoscaler`,
-which is currently on the latest beta version. However, please note that we do
-not plan on doing the same for Prometheus Adapter, as it is slated for
-deprecation in the near future.
+Adapters can add `v1` on their own schedule. HPA must keep working with an
+adapter that serves only `v1beta1`. Adapters built on
+[`sigs.k8s.io/custom-metrics-apiserver`](https://github.com/kubernetes-sigs/custom-metrics-apiserver)
+need that library to serve both versions. Today its `InstallExternalMetricsAPI`
+installs only one version.
+
+This proposal keeps the `v1beta1` selector semantics. SIG Instrumentation
+should confirm whether
+[kubernetes/kubernetes#102056](https://github.com/kubernetes/kubernetes/issues/102056)
+needs to be resolved before GA.
 
 ### Risks and Mitigations
 
@@ -254,33 +264,25 @@ How will UX be reviewed, and by whom?
 Consider including folks who also work outside the SIG or subproject.
 -->
 
-For the purpose of explaining the risks, we'll assume two entities here.
+Each APIService registers one group/version and forwards requests for that
+version to its backing service. The adapter must implement the corresponding
+version discovery and metric data routes and encode the requested version in
+the response. An additional APIService does not convert requests to a version
+the adapter already serves.
 
-First, a requester (e.g., HPAs), which utilizes the `external.metrics.k8s.io`
-client, and second, a external metrics adapter (e.g., Prometheus Adapter) which
-utilizes the type definitions exposed by
-`k8s.io/metrics/pkg/apis/external_metrics` to wrap over and expose the metrics
-recieved from the metrics backend in a manner that's is consumable by the
-requester.
+| HPA client | Registered and served versions | Expected request |
+| --- | --- | --- |
+| Existing beta client | `v1beta1`, with or without `v1` | `v1beta1` |
+| Version-aware client | `v1beta1` only | `v1beta1` |
+| Version-aware client | `v1` only | `v1` |
+| Version-aware client | Both versions, stable preferred | `v1` |
+| Version-aware client | Both versions, beta preferred | `v1beta1` under the proposed discovery policy |
+| Version-aware client | Both registered, adapter serves only `v1beta1` | `v1beta1`, after aggregated discovery marks `v1` as stale |
 
-The requester and the adapter are linked through an `APIService` object, which
-allows the latter to act as addon APIServer through the aggregation layer for
-all requests from the requester towards that `GroupVersion`. Note that while the
-APIServer will promote or fallback between versions that support conversions,
-that is not the case within the aggregation layer.
-
-Now, let's consider the different scenarios that can arise from varying
-configurations of the two:
-
-| Requester's `external.metrics.k8s.io` client version | APIService's `GroupVersion` | Adapter's `k8s.io/metrics/pkg/apis/external_metrics` type definitions' version | Working version       |
-| --------------------------------------------------   | --------------------------- | ----------------------------------------------------------------------------   | --------------------- |
-| Beta                                                 | Stable                      | No effect (as both API surfaces are interchangeable)                           | 404 for client's verb |
-| Stable                                               | Beta                        | No effect (as both API surfaces are interchangeable)                           | 404 for client's verb |
-| Stable                                               | Stable                      | No effect (as both API surfaces are interchangeable)                           | Stable                |
-| Beta                                                 | Beta                        | No effect (as both API surfaces are interchangeable)                           | Beta                  |
-
-Therefore, users need to ensure that the same version is being used between the
-requester and the adapter in order for the migration to be successful.
+A client that only knows `v1beta1` stops working if the `v1beta1` APIService
+is removed. Register each version only after the adapter serves it. The client
+does not retry a failed metric read with another version. A missing metric, a
+forbidden request or an unavailable backend is returned as a read error.
 
 ## Design Details
 
@@ -295,7 +297,7 @@ The `external.metrics.k8s.io` API enables operations based on global metric(s)
 that are not associated with any objects within the cluster, in a manner that is
 adapter-agnostic. As a part of the aggregation layer, adapters instrumenting the
 API benefit from APIServer's authentication and authorization measures
-out-of-the-box (on top of their own), while the API itself servers as a
+out-of-the-box (on top of their own), while the API itself serves as a
 standardized interface for such operations within the ecosystem.
 
 The diagram below gives a general idea on the flow:
@@ -304,7 +306,7 @@ The diagram below gives a general idea on the flow:
 graph TD
 A[Requester] -- GET external.metrics.k8s.io/v1beta1/... --> B[API Server]
 B -- v1beta1.external.metrics.k8s.io APIService --> C[Adapter]
-C -- v1beta1.MetricValue (instantaneous) OR v1beta1.MetricValueList (ranged) --> B
+C -- v1beta1.ExternalMetricValueList --> B
 C -- metric resolution --> D[Metrics backend]
 ```
 
@@ -330,16 +332,17 @@ C -- metric resolution --> D[Metrics backend]
   spec:
     group: external.metrics.k8s.io
     groupPriorityMinimum: 100
-    insecureSkipTLSVerify: true
+    caBundle: <base64-encoded-serving-CA-bundle>
     service:
       name: prometheus-adapter
       namespace: monitoring
     version: v1beta1
     versionPriority: 100
   ```
-- The aggregator adds the `X-Remote-User: system:admin` header to the request,
-  then verifies the adapter's certificates (using the `caBundle` APIService
-  field), as well as submitting its own to identify itself to the adapter.
+- The aggregator verifies the adapter's serving certificate with the
+  `caBundle` of the APIService, identifies itself with its proxy client
+  certificate, and passes the identity of the original requester in the
+  `X-Remote-User` and `X-Remote-Group` headers.
 - The adapter queries the metrics backend for the metrics requested, while
   resolving them first on its own end, when needed, for e.g., the following
   `rules` element defines how Prometheus adapter resolves `foo-qps`:
@@ -360,7 +363,7 @@ C -- metric resolution --> D[Metrics backend]
   given it exactly matches a metric name, and has the appropriate labels.
 - The requested metric resolves to one or more metrics in the matching metric
   family, and the returned response from the adapter takes the form of a
-  `k8s.io/metrics/pkg/apis/external_metrics`.MetricValueList:
+  versioned `ExternalMetricValueList`:
   ```
   {
     "apiVersion": "external.metrics.k8s.io/v1beta1",
@@ -369,17 +372,15 @@ C -- metric resolution --> D[Metrics backend]
       [
         {
           "metricName": "foo-qps",
-          "metricLabels": null,
-          "timestamp": "...",
-          "value": "30",
-        },
-      ],
+          "metricLabels": {"app": "frontend"},
+          "timestamp": "2026-01-01T00:00:00Z",
+          "value": "30"
+        }
+      ]
   }
   ```
-  Note that the `window` is optional and typically omitted or set to zero for
-  instantaneous metrics (guages).
-- Using the recieved metrics, the requester can execute operations based on
-  defined behaviors as it wants.
+  The optional JSON field `window` is measured in seconds.
+  The HPA controller consumes the returned metric values and timestamps.
 
 ### Test Plan
 
@@ -398,8 +399,57 @@ when drafting this test plan.
 existing tests to make this code solid enough prior to committing the changes necessary
 to implement this enhancement.
 
-Since the change only encompasses the API surface which remains unchanged going
-into stable, we believe that the existing testing should suffice.
+`external.metrics.k8s.io` is served through the aggregation layer by an
+optional add-on, so it is not eligible for conformance tests, for the same
+reason that the HPA endpoints were
+[marked ineligible](https://github.com/kubernetes/kubernetes/pull/107349).
+The conformance items in the checklist above stay unchecked.
+
+##### Prerequisite testing updates
+
+The agnhost `external-metrics` server
+([`test/images/agnhost/external-metrics`](https://github.com/kubernetes/kubernetes/tree/master/test/images/agnhost/external-metrics))
+advertises only `v1beta1`, but it answers a metric request for any version
+with a `v1beta1` body. Before it can test version selection, it needs to
+return 404 for a version it does not serve, and to serve both versions from
+the same data.
+
+##### Unit tests
+
+- [`k8s.io/metrics/pkg/apis/roundtrip_test.go`](https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/metrics/pkg/apis/roundtrip_test.go):
+  add the `v1` types to the round trip and compatibility tests.
+- [`k8s.io/metrics/pkg/client/external_metrics`](https://github.com/kubernetes/kubernetes/tree/master/staging/src/k8s.io/metrics/pkg/client/external_metrics):
+  there are no tests today. Add tests for version selection with only
+  `v1beta1`, only `v1`, both versions with each preference, an unknown
+  preferred version and no supported version, and check the namespace and
+  label selector of each request.
+- [`k8s.io/kubernetes/pkg/controller/podautoscaler/metrics`](https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/podautoscaler/metrics/client_test.go):
+  run `TestRESTClientExternalMetrics` against both versions, keep the error
+  for an empty list, and check that a 403, 404 or 503 on a metric read is
+  returned without a retry on another version.
+
+##### Integration tests
+
+- [`test/integration/podautoscaler`](https://github.com/kubernetes/kubernetes/tree/master/test/integration/podautoscaler):
+  these HPA tests use a fake external metrics client, so they do not cover
+  discovery.
+- Add a test that registers an adapter through the aggregation layer, as
+  [`test/integration/examples/apiserver_test.go`](https://github.com/kubernetes/kubernetes/blob/master/test/integration/examples/apiserver_test.go)
+  does for the sample API server. Keep one client while the test moves from
+  `v1beta1` only to both versions, changes the priorities, removes `v1` and
+  adds it back. At each step, check the request path, the returned group,
+  version and kind, and the values. Also cover a `v1` APIService whose backend
+  serves only `v1beta1`.
+
+##### e2e tests
+
+- [`test/e2e/autoscaling/horizontal_pod_autoscaling_external_metrics.go`](https://github.com/kubernetes/kubernetes/blob/master/test/e2e/autoscaling/horizontal_pod_autoscaling_external_metrics.go)
+  scales a deployment on an external metric served by agnhost. It runs in
+  `ci-kubernetes-e2e-autoscaling-hpa-cpu`
+  ([sig-autoscaling-hpa-periodics](https://testgrid.k8s.io/sig-autoscaling-hpa-periodics)).
+  The helpers in `test/e2e/framework/autoscaling` register only the `v1beta1`
+  APIService and will also register `v1`. Version changes are tested in
+  integration, so the e2e test does not disrupt a shared cluster.
 
 ### Graduation Criteria
 
@@ -467,11 +517,13 @@ in back-to-back releases.
 
 #### GA
 
-- Migrate `pkg/controller/podautoscaler` to use
-  `k8s.io/metrics/pkg/apis/external_metrics`'s `v1`.
-- Publish the effort on the website to spread awareness and encourage folks to
-  move onto the newer version, allowing us to additionally deprecate the older
-  ones in the late future.
+- `k8s.io/metrics` has the `v1` types and the version-aware client, and keeps
+  the `v1beta1` types.
+- The HPA controller selects the version through discovery, and the upgrade,
+  rollback and skew cases in the Test Plan pass.
+- The agnhost test adapter serves both versions, and the HPA e2e test uses it.
+- User documentation covers the adapter rollout order, how to check that a
+  version works, and rollback.
 
 Please note that the ALPHA and BETA sections were left out here as those
 pre-date the KEP process in k/k. For more information, please see the KEP issue.
@@ -490,16 +542,19 @@ enhancement:
   cluster required to make on upgrade, in order to make use of the enhancement?
 -->
 
-The primary area of focus when upgrading or downgrading is ensuring that a
-registered APIService exists for the same version that the
-`external.metrics.k8s.io`'s client is using, i.e., if the latter is on an older
-version ensure that the APIServer knows where to route requests based on that,
-and vice versa.
+Upgrading the control plane needs no change to the adapter. With an adapter
+that serves only `v1beta1`, HPA keeps reading through `v1beta1`.
 
-Do note that the version used in the adapter (assuming it's one
-of `v1beta1` or `v1`) does not affect its interoperability with the version
-defined in the APIService or the requester. Refer to the table above for more
-details.
+To start using `v1`, update the adapter so that it serves `v1`, then create
+the `v1` APIService. Check that the APIService is `Available` and that a
+metric read through `v1` returns data. Keep the `v1beta1` APIService while
+clients that only know `v1beta1` use it, or while the control plane may be
+rolled back.
+
+Before rolling the control plane back, check that a metric read through
+`v1beta1` still works. To stop serving `v1` while the controller is
+version-aware, delete the `v1` APIService first, wait at least one HPA sync
+period, and then remove `v1` from the adapter.
 
 ### Version Skew Strategy
 
@@ -516,17 +571,24 @@ enhancement:
   CRI or CNI may require updating that component before the kubelet.
 -->
 
-In the sections above, as established, the compability between the requester and
-the APIService versions is what really matters here. Within the scope of k/k, an
-upgraded `pkg/controller/podautoscaler` (the only affected component) with the
-newer API version may fail to fetch any data whatsoever from the adapter, as the
-existing APIService would still be pointing to the older API version. While
-there are no two in-tree components involved in this scenario, HPAs could still
-fail to work with, say, Prometheus adapter, a sub-project under SIG
-Instrumentation, which follows a similar release cadence as k/k. Note that an
-upgraded `pkg/controller/podautoscaler` could still work with the same
-Prometheus adapter instance, given that an APIService object exists for the
-newer API.
+The version-aware client uses the rule of the custom metrics client
+(`chooseVersion` in `k8s.io/metrics/pkg/client/custom_metrics`). It takes the
+preferred version of the group if the client supports it, and otherwise the
+first supported version in the order that discovery lists. The HPA controller
+reads aggregated discovery, which leaves out versions that the aggregator
+marks as stale, so a `v1` APIService whose backend does not answer is skipped.
+The selected version is cached and refreshed every HPA sync period, as
+`PeriodicallyInvalidate` already does for custom metrics.
+
+Discovery lists versions by `versionPriority`. With equal priorities, `v1`
+comes before `v1beta1`. An adapter that serves both versions should give the
+`v1` APIService the same or a higher priority than the `v1beta1` one.
+
+With this rule, an operator who gives `v1beta1` the higher priority keeps HPA
+on `v1beta1`, even when `v1` works. The resource metrics client proposed in
+[kubernetes/kubernetes#141366](https://github.com/kubernetes/kubernetes/pull/141366)
+makes the same choice. Always using `v1` is listed under
+[Alternatives](#alternatives).
 
 ## Production Readiness Review Questionnaire
 
@@ -573,10 +635,10 @@ well as the [existing list] of feature gates.
 - [ ] Feature gate (also fill in values in `kep.yaml`)
   - Feature gate name: N/A
   - Components depending on the feature gate: N/A
-- [ ] Other
-  - Describe the mechanism: The newer API may be enabled or disabled by ensuring
-    the newer or older versions exist across the HPA controller
-    (controller-manager) and the registered APIService, respectively.
+- [X] Other
+  - Describe the mechanism: An operator enables `v1` by updating the adapter
+    to serve it and creating the `v1` APIService. Deleting that APIService
+    disables it.
   - Will enabling / disabling the feature require downtime of the control
     plane? No.
   - Will enabling / disabling the feature require downtime or reprovisioning
@@ -589,7 +651,10 @@ Any change of default behavior may be surprising to users or break existing
 automations, so be extremely careful here.
 -->
 
-No.
+With an adapter that serves only `v1beta1`, no. With an adapter that serves
+both versions, the HPA controller switches to the version that discovery
+prefers, which is `v1` unless an operator gives `v1beta1` a higher priority.
+Both versions return the same fields and values.
 
 ###### Can the feature be disabled once it has been enabled (i.e. can we roll back the enablement)?
 
@@ -604,15 +669,16 @@ feature.
 NOTE: Also set `disable-supported` to `true` or `false` in `kep.yaml`.
 -->
 
-To disable the usage of the newer version of the API, rollback the
-`controller-manager` and make sure an APIService with the older `v1beta1`
-version of the API is registered.
+Yes. Delete the `v1` APIService, and a version-aware controller moves back
+to `v1beta1` at its next refresh. Before rolling the control plane back
+to a version that only knows `v1beta1`, check that the `v1beta1` APIService
+works.
 
 ###### What happens if we reenable the feature if it was previously rolled back?
 
-No breaking behaviors, as soon as the `controller-manager` is back up with the
-newer `external.metrics.k8s.io` API version and a corresponding APIService object,
-the observed workflow should be unchanged from its previous exhibition.
+Create the `v1` APIService again after the adapter serves `v1`. The
+controller selects `v1` again at its next refresh if discovery lists `v1`
+first.
 
 ###### Are there any tests for feature enablement/disablement?
 
@@ -629,7 +695,7 @@ You can take a look at one potential example of such test in:
 https://github.com/kubernetes/kubernetes/pull/97058/files#diff-7826f7adbc1996a05ab52e3f5f02429e94b68ce6bce0dc534d1be636154fded3R246-R282
 -->
 
-N/A
+See the version transition and HPA cases in the [Test Plan](#test-plan).
 
 ### Rollout, Upgrade and Rollback Planning
 
@@ -649,10 +715,11 @@ rollout. Similarly, consider large clusters and how enablement/disablement
 will rollout across nodes.
 -->
 
-A version mismatch between the `external.metrics.k8s.io` version being used by the
-client in the HPA controller and the available APIService objects could disrupt
-the workflow, as discussed above, in addition to some downtime until the
-upgraded `controller-manager` is spun up to support the newer API version.
+A registered but unavailable version or a versioned data route missing from
+the adapter can prevent HPA from reading the metric. Existing pods keep
+running, but the HPA may be unable to scale on that metric. Inspect
+APIService availability, perform a metric read with the same selector and
+check the HPA conditions and current metrics.
 
 ###### What specific metrics should inform a rollback?
 
@@ -661,13 +728,15 @@ What signals should users be paying attention to when the feature is young
 that might indicate a serious problem?
 -->
 
-- `horizontal_pod_autoscaler_controller_metric_computation_total{error="internal"}`
-- `horizontal_pod_autoscaler_controller_metric_computation_duration_seconds{error="internal"}`
+- `horizontal_pod_autoscaler_controller_metric_computation_total{metric_type="External",error="internal"}`
+- `horizontal_pod_autoscaler_controller_metric_computation_duration_seconds{metric_type="External",error="internal"}`
+- `aggregator_unavailable_apiservice{name="v1.external.metrics.k8s.io"}`
 
-Both of the above are true for a subset of errors for which the controller fails
-to fetch metrics. See
+The first two count external metric computations that failed, which include
+failed metric reads. See
 [pkg/controller/podautoscaler/horizontal.go](https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/podautoscaler/horizontal.go)
-for more information.
+for more information. The third is 1 while the `v1` APIService is
+unavailable.
 
 ###### Were upgrade and rollback tested? Was the upgrade->downgrade->upgrade path tested?
 
@@ -677,7 +746,26 @@ Longer term, we may want to require automated upgrade/rollback tests, but we
 are missing a bunch of machinery and tooling and can't do that now.
 -->
 
-TODO.
+Not yet. The path needs an adapter release that serves `v1`, which can exist
+only after the `v1` types are in `k8s.io/metrics`. It will be tested manually
+before graduation with the steps below, and the integration test in the Test
+Plan covers the same steps.
+
+The API is read-only and has no stored objects, so no step migrates data. Only
+the registered APIServices and the version that HPA selects change.
+
+1. Upgrade: update the adapter to a release that serves both versions, create
+   the `v1.external.metrics.k8s.io` APIService, and upgrade
+   kube-controller-manager. Check that:
+   - both APIServices report `Available=True`,
+   - `kubectl get --raw /apis/external.metrics.k8s.io/v1/namespaces/<namespace>/<metric>`
+     returns data,
+   - HPAs with an external metric keep `ScalingActive=True`.
+2. Downgrade: delete the `v1` APIService, wait at least one HPA sync period,
+   roll back the adapter, and then roll back kube-controller-manager. Check
+   that the `v1beta1` APIService reports `Available=True` and that HPAs keep
+   `ScalingActive=True`.
+3. Upgrade again: repeat step 1 and its checks.
 
 ###### Is the rollout accompanied by any deprecations and/or removals of features, APIs, fields of API types, flags, etc.?
 
@@ -685,7 +773,9 @@ TODO.
 Even if applying deprecation policies, they may still surprise some users.
 -->
 
-No deprecations or removals, only the introduction of a newer API version.
+This rollout adds `v1` and removes nothing. Graduating `v1` deprecates
+`v1beta1`, which stays in `k8s.io/metrics` and is removed only in a later
+release, following the deprecation policy.
 
 ### Monitoring Requirements
 
@@ -696,8 +786,6 @@ For GA, this section is required: approvers should be able to confirm the
 previous answers based on experience in the field.
 -->
 
-N/A
-
 ###### How can an operator determine if the feature is in use by workloads?
 
 <!--
@@ -706,7 +794,8 @@ checking if there are objects with field X set) may be a last resort. Avoid
 logs or events for this purpose.
 -->
 
-N/A
+List the HPAs that have an `External` metric source, and check whether a
+`v1.external.metrics.k8s.io` APIService exists.
 
 ###### How can someone using this feature know that it is working for their instance?
 
@@ -720,15 +809,16 @@ Recall that end users cannot usually observe component logs or access metrics.
 -->
 
 - [X] API .status
-  - Condition name: AbleToScale
-  - Other field: `.status == True`
-- [X] API .status
-  - Condition name: ScalingActive
-  - Other field: `.reason == ValidMetricFound`
-- [X] Other 
-  - Details: Registered versions can be listed by quering `/apis`:
+  - Condition name: `Available` on the `v1.external.metrics.k8s.io` APIService:
+  ```
+  kubectl get apiservice v1.external.metrics.k8s.io
+  ```
+- [X] Other
+  - Details: the registered versions can be listed, and a metric can be read
+    through `v1` directly:
   ```
   kubectl get --raw /apis/external.metrics.k8s.io/ | jq .
+  kubectl get --raw "/apis/external.metrics.k8s.io/v1/namespaces/<namespace>/<metric>"
   ```
 
 ###### What are the reasonable SLOs (Service Level Objectives) for the enhancement?
@@ -748,7 +838,11 @@ These goals will help you determine what you need to measure (SLIs) in the next
 question.
 -->
 
-N/A
+The `v1.external.metrics.k8s.io` APIService stays `Available`
+(`aggregator_unavailable_apiservice{name="v1.external.metrics.k8s.io"}` is 0),
+except while the adapter is upgraded. Request success, latency and data
+freshness depend on the adapter and its metrics backend, and are out of scope
+for this KEP, which defines the API.
 
 ###### What are the SLIs (Service Level Indicators) an operator can use to determine the health of the service?
 
@@ -756,7 +850,18 @@ N/A
 Pick one more of these and delete the rest.
 -->
 
-N/A
+- [X] Metrics
+  - Metric names:
+    - `aggregator_unavailable_apiservice{name="v1.external.metrics.k8s.io"}`
+      (gauge) and `aggregator_unavailable_apiservice_total{name="v1.external.metrics.k8s.io"}`
+      (counter): availability of the APIService as seen by the aggregation
+      layer.
+    - `apiserver_request_terminations_total{component="aggregator",group="external.metrics.k8s.io"}`:
+      requests that the aggregation layer rejected because it could not reach
+      the adapter.
+    - `horizontal_pod_autoscaler_controller_metric_computation_total{metric_type="External"}`:
+      external metric computations of the HPA controller, by error.
+  - Components exposing the metrics: kube-apiserver and kube-controller-manager.
 
 ###### Are there any missing metrics that would be useful to have to improve observability of this feature?
 
@@ -790,8 +895,12 @@ and creating new ones, as well as about cluster-level services (e.g. DNS):
       - Impact of its degraded performance or high-error rates on the feature:
 -->
 
-Currently, `controller-manager` relies on this API, and in order to establish an
-overall workflow, needs the aggregation layer to route the requests accordingly.
+Yes. Serving `external.metrics.k8s.io` requires an adapter running in the
+cluster, for example [KEDA](https://keda.sh) or
+[Prometheus Adapter](https://github.com/kubernetes-sigs/prometheus-adapter),
+that registers and backs the APIService. Currently, `controller-manager` relies
+on this API, and in order to establish an overall workflow, needs the
+aggregation layer to route the requests accordingly.
 
 ### Scalability
 
@@ -820,7 +929,11 @@ Focusing mostly on:
     heartbeats, leader election, etc.)
 -->
 
-No.
+Yes. To select the version, the HPA controller reads the API group list from
+discovery, as it already does for custom metrics. While a version is selected,
+this is at most once per HPA sync period (15 seconds by default). If discovery
+fails or lists no supported version, nothing is cached, and the next metric
+read asks discovery again.
 
 ###### Will enabling / using this feature result in introducing new API types?
 
@@ -852,8 +965,7 @@ Describe them, providing:
   - Estimated amount of new objects: (e.g., new Object X for every existing Pod)
 -->
 
-By one. An APIService object needs to be created to register the newer API
-version.
+No.
 
 ###### Will enabling / using this feature result in increasing time taken by any operations covered by existing SLIs/SLOs?
 
@@ -929,11 +1041,27 @@ For each of them, fill in the following information by copying the below templat
     - Testing: Are there any tests for failure mode? If not, describe why.
 -->
 
-N/A
+- kube-apiserver cannot reach the adapter, for example because
+  authentication or the network between them is broken. The APIService
+  reports `Available=False`, `aggregator_unavailable_apiservice` is 1, and
+  HPAs report `ScalingActive=False` with reason `FailedGetExternalMetric`.
+- The adapter cannot read its metrics backend. The APIService stays
+  `Available`, but metric reads return errors. This part is specific to each
+  adapter.
+- The `v1` APIService exists, but the adapter does not serve `v1`, because
+  the APIService was created too early or `v1` was removed from the adapter
+  first. The `v1` APIService has `Available=False` with reason
+  `FailedDiscoveryCheck`, and aggregated discovery marks `v1` as stale. If the
+  HPA controller selected `v1` before that, HPAs report `ScalingActive=False`
+  with reason `FailedGetExternalMetric` until the controller refreshes its
+  version. Delete the `v1` APIService or fix the adapter. The integration test
+  in the Test Plan covers this case.
 
 ###### What steps should be taken if SLOs are not being met to determine the problem?
 
-N/A
+Inspect the condition of each registered APIService, the group and version
+discovery responses and a namespaced metric read with the HPA's selector.
+Compare the returned group/version, metric values and timestamps with HPA status.
 
 ## Implementation History
 
@@ -948,7 +1076,8 @@ Major milestones might include:
 - when the KEP was retired or superseded
 -->
 
-TODO.
+- 2025-05-02: Initial KEP draft in [#5268](https://github.com/kubernetes/enhancements/pull/5268).
+- v1.39: KEP updated for the stable graduation.
 
 <!-- - Graduate `external.metrics.k8s.io` to stable, by introducing the same API under -->
 <!--   `v1` as exists currently under `v1beta1`. -->
@@ -974,4 +1103,7 @@ not need to be as detailed as the proposal, but should include enough
 information to express the idea and why it was not acceptable.
 -->
 
-N/A
+Always use `v1` when the adapter serves it, and fall back to `v1beta1`
+otherwise. This ignores a `versionPriority` that an operator set on purpose,
+and it differs from how the custom metrics client and the resource metrics
+client proposed in kubernetes/kubernetes#141366 select a version.
